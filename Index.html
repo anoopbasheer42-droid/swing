@@ -1,1 +1,316 @@
 
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Swing Commander</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{padding:12px;background:#0a0e14;color:#d4d4d4;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px;line-height:1.4}
+.header{display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid #1e2530;padding-bottom:8px;margin-bottom:12px}
+.pair{font-size:16px;font-weight:700;color:#5fb3ff;letter-spacing:1px}
+.time{font-size:11px;color:#666}
+.card{background:#11161f;border:1px solid #1e2530;border-radius:6px;padding:10px 12px;margin-bottom:8px}
+.price{font-size:30px;font-weight:700;color:#fff;display:inline-block;margin-right:12px}
+.regime{font-size:12px;padding:2px 8px;border-radius:3px;background:#2a1a1a;color:#ff7b7b;display:inline-block;margin-right:8px}
+.regime.TREND_UP{background:#16351f;color:#6dff8a}
+.regime.TREND_DOWN{background:#35161a;color:#ff7b7b}
+.regime.RANGE,.regime.TRANSITION{background:#2a2416;color:#ffc966}
+.bias{font-size:13px;font-weight:600;display:inline-block}
+.bias.SELL{color:#ff7b7b}.bias.BUY{color:#6dff8a}.bias.WAIT{color:#888}
+.section-title{font-size:11px;color:#666;letter-spacing:1.5px;margin:12px 0 6px;text-transform:uppercase}
+.engines{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
+.eng{text-align:center;padding:6px 4px;border-radius:4px;background:#11161f;border:1px solid #1e2530}
+.eng .name{font-size:10px;color:#666}
+.eng .score{font-size:16px;font-weight:700;margin-top:2px}
+.eng .side{font-size:10px;margin-top:2px}
+.eng.buy .score,.eng.buy .side{color:#6dff8a}
+.eng.sell .score,.eng.sell .side{color:#ff7b7b}
+.eng.wait .score{color:#666}
+.mode-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.mode-card{background:#11161f;border:1px solid #1e2530;border-radius:6px;padding:12px}
+.mode-name{font-size:12px;color:#5fb3ff;letter-spacing:1px;margin-bottom:8px}
+.mode-status{font-size:11px;padding:2px 6px;border-radius:3px;display:inline-block;margin-bottom:8px;background:#1e2530;color:#888}
+.mode-status.open{background:#16351f;color:#6dff8a}
+.trade-line{display:flex;justify-content:space-between;font-size:13px;padding:2px 0}
+.trade-line .k{color:#666}
+.trade-line .v{font-weight:600}
+.wl{margin-top:8px;font-size:12px;color:#888}
+.wl .w{color:#6dff8a}.wl .l{color:#ff7b7b}
+.sr-list{display:flex;gap:8px;flex-wrap:wrap}
+.sr-item{padding:4px 8px;background:#11161f;border:1px solid #1e2530;border-radius:4px;font-size:12px}
+.sr-item .lbl{color:#666;margin-left:4px}
+.sr-item .val{color:#fff;font-weight:600}
+.sr-item.res .val{color:#ff7b7b}
+.sr-item.sup .val{color:#6dff8a}
+.err{color:#ff7b7b;padding:8px;border:1px solid #5c2d2d;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="pair">EUR/USD · SWING COMMANDER</div>
+  <div class="time" id="time">—</div>
+</div>
+<div id="root"><div class="card">loading...</div></div>
+
+<script>
+"use strict";
+const API_KEY = "4ba3968e609544bf8990192fdf3ed970";
+const SYMBOL = "EUR/USD";
+const REFRESH = 120000;
+const PIP = 0.0001;
+const STATE_KEY = "swing_state_v1";
+const Modes = {
+  HIGH_OPPORTUNITY: { min_score: 70, min_confirms: 2 },
+  BALANCED: { min_score: 75, min_confirms: 3 },
+  SNIPER: { min_score: 85, min_confirms: 4 }
+};
+const WEIGHTS = { PULLBACK:0.25, BREAKOUT:0.20, LIQUIDITY:0.20, RANGE:0.15, MOMENTUM:0.20 };
+let marketData = { D1:[], H4:[], H1:[] };
+let state = loadState();
+let loading = false;
+
+function emptyMode(){return{open_trade:null,today:{wins:0,losses:0},cooldown_until:null}}
+function emptyState(){return{HIGH_OPPORTUNITY:emptyMode(),BALANCED:emptyMode(),SNIPER:emptyMode()}}
+function loadState(){try{const r=localStorage.getItem(STATE_KEY);if(r)return JSON.parse(r)}catch(e){}return emptyState()}
+function saveState(){try{localStorage.setItem(STATE_KEY,JSON.stringify(state))}catch(e){}}
+
+function ema(v,p){if(!v.length)return[];const k=2/(p+1),o=new Array(v.length);o[0]=v[0];for(let i=1;i<v.length;i++)o[i]=v[i]*k+o[i-1]*(1-k);return o}
+function emaWild(v,p){if(!v.length)return[];const a=1/p,o=new Array(v.length);o[0]=v[0];for(let i=1;i<v.length;i++)o[i]=v[i]*a+o[i-1]*(1-a);return o}
+function computeRSI(c,p){p=p||14;const n=c.length,o=new Array(n).fill(50);if(n<2)return o;
+  const g=new Array(n).fill(0),l=new Array(n).fill(0);
+  for(let i=1;i<n;i++){const d=c[i]-c[i-1];if(d>0)g[i]=d;else l[i]=-d}
+  const ag=emaWild(g,p),al=emaWild(l,p);
+  for(let i=0;i<n;i++)o[i]=al[i]===0?50:100-100/(1+ag[i]/al[i]);
+  return o}
+function computeATR(c,p){p=p||14;const n=c.length,tr=new Array(n).fill(0);
+  for(let i=1;i<n;i++)tr[i]=Math.max(c[i].high-c[i].low,Math.abs(c[i].high-c[i-1].close),Math.abs(c[i].low-c[i-1].close));
+  return emaWild(tr,p)}
+function computeADX(c,p){p=p||14;const n=c.length,pdm=new Array(n).fill(0),mdm=new Array(n).fill(0),tr=new Array(n).fill(0);
+  for(let i=1;i<n;i++){const up=c[i].high-c[i-1].high,dn=c[i-1].low-c[i].low;
+    pdm[i]=(up>dn&&up>0)?up:0;mdm[i]=(dn>up&&dn>0)?dn:0;
+    tr[i]=Math.max(c[i].high-c[i].low,Math.abs(c[i].high-c[i-1].close),Math.abs(c[i].low-c[i-1].close))}
+  const atr=emaWild(tr,p);
+  const pdi=emaWild(pdm,p).map((v,i)=>atr[i]>0?100*v/atr[i]:0);
+  const mdi=emaWild(mdm,p).map((v,i)=>atr[i]>0?100*v/atr[i]:0);
+  const dx=pdi.map((v,i)=>{const s=v+mdi[i];return s===0?0:100*Math.abs(v-mdi[i])/s});
+  return emaWild(dx,p)}
+function addIndicators(c){if(!c.length)return c;
+  const closes=c.map(x=>x.close);
+  const e20=ema(closes,20),e50=ema(closes,50),r=computeRSI(closes),a=computeATR(c),x=computeADX(c);
+  return c.map((row,i)=>({...row,ema20:e20[i],ema50:e50[i],rsi:r[i],atr:a[i],adx:x[i]}))}
+function findSwings(c,lb){lb=lb||5;const n=c.length,o=[];
+  for(let i=lb;i<n-lb;i++){let isH=true,isL=true,hc=0,lc=0;
+    for(let j=i-lb;j<=i+lb;j++){if(c[j].high>c[i].high)isH=false;if(c[j].high===c[i].high)hc++;
+      if(c[j].low<c[i].low)isL=false;if(c[j].low===c[i].low)lc++}
+    if(isH&&hc===1)o.push({idx:i,price:c[i].high,type:"H"});
+    if(isL&&lc===1)o.push({idx:i,price:c[i].low,type:"L"})}
+  return o.sort((a,b)=>a.idx-b.idx)}
+function classifySwings(sw){const o=[];let lh=null,ll=null;
+  for(const s of sw){let t=null;
+    if(s.type==="H"){if(lh)t=s.price>lh.price?"HH":"LH";lh=s}
+    else{if(ll)t=s.price>ll.price?"HL":"LL";ll=s}
+    o.push({...s,tag:t})}
+  return o}
+function structureSnapshot(c){const l=classifySwings(findSwings(c));
+  const tags=l.filter(x=>x.tag).map(x=>x.tag).slice(-6);
+  const hh=tags.filter(t=>t==="HH").length,hl=tags.filter(t=>t==="HL").length;
+  const lh=tags.filter(t=>t==="LH").length,ll=tags.filter(t=>t==="LL").length;
+  const bull=hh+hl,bear=lh+ll;
+  let bias="MIXED";if(bull>bear+1)bias="BULLISH";else if(bear>bull+1)bias="BEARISH";
+  return{bias}}
+function detectSweep(c){if(c.length<13)return{side:null};
+  const sw=findSwings(c);let lh=null,ll=null;
+  for(let i=sw.length-1;i>=0;i--){if(sw[i].type==="H"&&!lh)lh=sw[i];if(sw[i].type==="L"&&!ll)ll=sw[i];if(lh&&ll)break}
+  for(const r of c.slice(-3)){const o=r.open,cl=r.close,h=r.high,l=r.low;
+    const body=Math.max(Math.abs(cl-o),PIP),lw=Math.min(o,cl)-l,uw=h-Math.max(o,cl);
+    if(ll&&l<ll.price&&cl>ll.price&&lw>=0.5*body)return{side:"BUY"};
+    if(lh&&h>lh.price&&cl<lh.price&&uw>=0.5*body)return{side:"SELL"}}
+  return{side:null}}
+function regime(c){if(c.length<30)return"TRANSITION";
+  const last=c[c.length-1],s=structureSnapshot(c);
+  if(last.adx>=25){if(last.close>last.ema20&&last.ema20>last.ema50&&s.bias==="BULLISH")return"TREND_UP";
+    if(last.close<last.ema20&&last.ema20<last.ema50&&s.bias==="BEARISH")return"TREND_DOWN"}
+  if(last.adx<=20&&s.bias==="MIXED")return"RANGE";
+  return"TRANSITION"}
+function collectLevels(){const out=[];
+  for(const tf of["D1","H4","H1"]){const c=marketData[tf];if(!c||!c.length)continue;
+    for(const s of findSwings(c))out.push({price:s.price,source:tf})}
+  return out}
+function clusterLevels(levels){if(!levels.length)return[];
+  const tol=15*PIP;const sorted=[...levels].sort((a,b)=>a.price-b.price);
+  const clusters=[];let cur=[sorted[0]];
+  for(let i=1;i<sorted.length;i++){if(Math.abs(sorted[i].price-cur[cur.length-1].price)<=tol)cur.push(sorted[i]);
+    else{clusters.push(cur);cur=[sorted[i]]}}
+  clusters.push(cur);
+  return clusters.map(cl=>{const price=cl.reduce((s,x)=>s+x.price,0)/cl.length;
+    const srcs=[...new Set(cl.map(x=>x.source))];
+    let w=cl.length+2*(srcs.length-1);
+    return{price,sources:srcs,strength:w>=8?"STRONG":w>=4?"MEDIUM":"WEAK"}})}
+function getSR(price){const cl=clusterLevels(collectLevels());
+  const R=cl.filter(c=>c.price>price).sort((a,b)=>a.price-b.price).slice(0,3);
+  const S=cl.filter(c=>c.price<price).sort((a,b)=>b.price-a.price).slice(0,3);
+  R.forEach((r,i)=>r.label="R"+(i+1));
+  S.forEach((s,i)=>s.label="S"+(i+1));
+  return{resistance:R,support:S}}
+function scorePullback(h4,h1,sr,dir){let s=0;
+  const sh4=structureSnapshot(h4),sh1=structureSnapshot(h1);
+  const last=h1[h1.length-1],price=last.close;
+  const need=dir==="BUY"?"BULLISH":"BEARISH";
+  if(sh4.bias===need)s+=30;else if(sh4.bias==="MIXED")s+=10;else return 0;
+  if(sh1.bias===need)s+=20;else if(sh1.bias==="MIXED")s+=8;
+  const near=(dir==="BUY"?sr.support:sr.resistance).find(lv=>Math.abs(lv.price-price)<20*PIP);
+  if(near)s+=15;
+  if(last.adx>=25)s+=15;
+  if(dir==="BUY"&&last.rsi>=40&&last.rsi<=65)s+=10;
+  if(dir==="SELL"&&last.rsi>=35&&last.rsi<=60)s+=10;
+  return Math.min(s,100)}
+function scoreBreakout(h4,h1,sr,dir){let s=0;
+  const last=h1[h1.length-1],price=last.close;
+  const broken=(dir==="BUY"?sr.resistance:sr.support).find(lv=>dir==="BUY"?lv.price<price-5*PIP:lv.price>price+5*PIP);
+  if(!broken)return 0;
+  s+=25;
+  const last3=h1.slice(-3);
+  const dc=last3.filter(r=>dir==="BUY"?r.close>r.open:r.close<r.open).length;
+  if(dc>=2)s+=20;
+  if(last.adx>=25)s+=15;
+  if(last.rsi>=40&&last.rsi<=70)s+=10;
+  return Math.min(s,100)}
+function scoreLiquidity(h1,sr,dir){let s=0;
+  const sw=detectSweep(h1);if(sw.side!==dir)return 0;
+  s+=30;
+  const sh1=structureSnapshot(h1);
+  if(sh1.bias===(dir==="BUY"?"BULLISH":"BEARISH"))s+=15;else if(sh1.bias==="MIXED")s+=8;
+  const last=h1[h1.length-1],price=last.close;
+  const near=(dir==="BUY"?sr.support:sr.resistance).find(lv=>Math.abs(lv.price-price)<15*PIP);
+  if(near)s+=15;
+  if(last.adx>=20)s+=10;
+  return Math.min(s,100)}
+function scoreRange(h4,h1,dir){const last=h1[h1.length-1],price=last.close;
+  if(last.adx>25)return 0;if(h4.length<30)return 0;
+  const w=h4.slice(-30);const hi=Math.max(...w.map(c=>c.high)),lo=Math.min(...w.map(c=>c.low));
+  const width=hi-lo;if(width<=0)return 0;
+  const pos=(price-lo)/width;let s=0;
+  if(dir==="BUY"){if(pos>0.35)return 0;s+=30}else{if(pos<0.65)return 0;s+=30}
+  if(last.adx<20)s+=20;
+  if(dir==="BUY"&&last.rsi<40)s+=15;
+  if(dir==="SELL"&&last.rsi>60)s+=15;
+  return Math.min(s,100)}
+function scoreMomentum(h4,h1,sr,dir){const sh4=structureSnapshot(h4);const last=h1[h1.length-1],price=last.close;
+  const need=dir==="BUY"?"BULLISH":"BEARISH";
+  if(sh4.bias!==need)return 0;if(last.adx<25)return 0;
+  let s=30;
+  if(dir==="BUY"&&last.rsi>=45&&last.rsi<=70)s+=20;
+  if(dir==="SELL"&&last.rsi>=30&&last.rsi<=55)s+=20;
+  const near=(dir==="BUY"?sr.resistance:sr.support)[0];
+  if(near){const d=dir==="BUY"?(near.price-price)/PIP:(price-near.price)/PIP;if(d>=40)s+=20}
+  return Math.min(s,100)}
+function runEngines(){const{H4,H1}=marketData;
+  if(!H1.length||H1.length<60)return null;
+  const price=H1[H1.length-1].close;
+  const sr=getSR(price);const reg=regime(H1);
+  const signals={
+    PULLBACK:{buy:scorePullback(H4,H1,sr,"BUY"),sell:scorePullback(H4,H1,sr,"SELL")},
+    BREAKOUT:{buy:scoreBreakout(H4,H1,sr,"BUY"),sell:scoreBreakout(H4,H1,sr,"SELL")},
+    LIQUIDITY:{buy:scoreLiquidity(H1,sr,"BUY"),sell:scoreLiquidity(H1,sr,"SELL")},
+    RANGE:{buy:scoreRange(H4,H1,"BUY"),sell:scoreRange(H4,H1,"SELL")},
+    MOMENTUM:{buy:scoreMomentum(H4,H1,sr,"BUY"),sell:scoreMomentum(H4,H1,sr,"SELL")}
+  };
+  const out={};
+  for(const[n,sc]of Object.entries(signals)){
+    const best=sc.buy>=sc.sell?"BUY":"SELL";
+    const score=Math.max(sc.buy,sc.sell);
+    out[n]={side:score>=65?best:"WAIT",score}}
+  const bv=Object.values(out).filter(s=>s.side==="BUY").length;
+  const sv=Object.values(out).filter(s=>s.side==="SELL").length;
+  let bias="WAIT";if(bv>sv)bias="BUY";else if(sv>bv)bias="SELL";
+  let biasScore=0;
+  if(bias!=="WAIT"){let ws=0,ss=0;
+    for(const[n,s]of Object.entries(out)){if(s.side===bias){ws+=WEIGHTS[n];ss+=s.score*WEIGHTS[n]}}
+    biasScore=ws>0?ss/ws:0;
+    const nn=bias==="BUY"?bv:sv;
+    if(nn>=3)biasScore=Math.min(biasScore+8,100);else if(nn===2)biasScore=Math.min(biasScore+3,100)}
+  const conflict=bv>0&&sv>0?(Math.min(bv,sv)>=2?"MODERATE":"LOW"):"NONE";
+  return{price,regime:reg,sr,signals:out,bias,biasScore,conflict,buyVotes:bv,sellVotes:sv}}
+function processModes(){const r=runEngines();if(!r)return null;
+  const result={modes:{}};
+  for(const mode of["HIGH_OPPORTUNITY","BALANCED","SNIPER"]){
+    const cfg=Modes[mode];let final="WAIT",reason="";
+    if(r.bias==="WAIT")reason="bias not aligned";
+    else if(r.biasScore<cfg.min_score)reason="score "+r.biasScore.toFixed(0)+" < "+cfg.min_score;
+    else{const n=r.bias==="BUY"?r.buyVotes:r.sellVotes;
+      if(n<cfg.min_confirms)reason="confirms "+n+" < "+cfg.min_confirms;else final=r.bias}
+    result.modes[mode]={final,reason,bias_score:r.biasScore,
+      wins:state[mode].today.wins,losses:state[mode].today.losses,
+      open_trade:state[mode].open_trade,
+      in_cooldown:state[mode].cooldown_until&&new Date()<new Date(state[mode].cooldown_until)}}
+  result.market={price:r.price,regime:r.regime,bias:r.bias,conflict:r.conflict,sr:r.sr,signals:r.signals};
+  return result}
+async function fetchCandles(interval,size){
+  const url=new URL("https://api.twelvedata.com/time_series");
+  url.searchParams.set("symbol",SYMBOL);
+  url.searchParams.set("interval",interval);
+  url.searchParams.set("outputsize",size);
+  url.searchParams.set("apikey",API_KEY);
+  url.searchParams.set("timezone","UTC");
+  url.searchParams.set("order","ASC");
+  const res=await fetch(url.toString(),{cache:"no-store"});
+  const data=await res.json();
+  if(data.status==="error")throw new Error(data.message);
+  if(!data.values)throw new Error("no values");
+  const out=data.values.map(v=>({time:new Date(v.datetime).getTime(),
+    open:+v.open,high:+v.high,low:+v.low,close:+v.close}));
+  return addIndicators(out)}
+async function loadAll(){
+  marketData.D1=await fetchCandles("1day",300);
+  marketData.H4=await fetchCandles("4h",300);
+  marketData.H1=await fetchCandles("1h",500)}
+function render(r){
+  const root=document.getElementById("root");if(!root)return;
+  if(!r){root.innerHTML='<div class="card">loading candles...</div>';return}
+  const m=r.market;
+  const tEl=document.getElementById("time");
+  if(tEl)tEl.textContent=new Date().toLocaleString("en-IN",{timeZone:"Asia/Kolkata",hour12:false});
+  let h='<div class="card"><div class="price">'+(m.price?m.price.toFixed(5):"—")+'</div>'
+    +'<span class="regime '+m.regime+'">'+m.regime+'</span>'
+    +'<span class="bias '+m.bias+'">BIAS '+m.bias+'</span>'
+    +'<div style="font-size:11px;color:#666;margin-top:4px;">conflict: '+m.conflict+'</div></div>';
+  h+='<div class="section-title">engines</div><div class="engines">';
+  for(const name of["MOMENTUM","PULLBACK","BREAKOUT","LIQUIDITY","RANGE"]){
+    const s=m.signals[name]||{side:"WAIT",score:0};
+    h+='<div class="eng '+s.side.toLowerCase()+'"><div class="name">'+name.slice(0,4)+'</div><div class="score">'+Math.round(s.score)+'</div><div class="side">'+s.side+'</div></div>'}
+  h+='</div>';
+  h+='<div class="section-title">modes</div><div class="mode-grid">';
+  for(const mode of["HIGH_OPPORTUNITY","BALANCED","SNIPER"]){
+    const md=r.modes[mode],t=md.open_trade;
+    let st="WAITING",sc="mode-status";
+    if(t){st=t.side+" OPEN";sc="mode-status open"}
+    else if(md.in_cooldown){st="COOLDOWN"}
+    h+='<div class="mode-card"><div class="mode-name">'+mode+'</div>'
+      +'<div class="'+sc+'">'+st+'</div>';
+    if(t){h+='<div class="trade-line"><span class="k">entry</span><span class="v">'+t.entry.toFixed(5)+'</span></div>';
+      h+='<div class="trade-line"><span class="k">SL</span><span class="v">'+t.sl.toFixed(5)+'</span></div>'}
+    else{h+='<div class="trade-line"><span class="k">score</span><span class="v">'+md.bias_score.toFixed(1)+'</span></div>';
+      h+='<div class="trade-line"><span class="k">final</span><span class="v">'+md.final+'</span></div>';
+      if(md.reason)h+='<div style="font-size:11px;color:#666;margin-top:6px;">'+md.reason+'</div>'}
+    h+='<div class="wl">today: <span class="w">'+md.wins+'W</span> / <span class="l">'+md.losses+'L</span></div></div>'}
+  h+='</div>';
+  const sr=[];
+  for(const r2 of m.sr.resistance)sr.push('<div class="sr-item res"><span class="lbl">'+r2.label+'</span><span class="val">'+r2.price.toFixed(5)+'</span><span class="lbl">'+r2.strength+'</span></div>');
+  sr.push('<div class="sr-item" style="background:#0a2a2a;"><span class="lbl">price</span><span class="val">'+m.price.toFixed(5)+'</span></div>');
+  for(const s2 of m.sr.support)sr.push('<div class="sr-item sup"><span class="lbl">'+s2.label+'</span><span class="val">'+s2.price.toFixed(5)+'</span><span class="lbl">'+s2.strength+'</span></div>');
+  h+='<div class="section-title">s/r levels</div><div class="sr-list">'+sr.join("")+'</div>';
+  root.innerHTML=h}
+async function tick(){
+  if(loading)return;loading=true;
+  try{await loadAll();const r=processModes();render(r)}
+  catch(e){console.error(e);const root=document.getElementById("root");
+    if(root)root.innerHTML='<div class="err">Error: '+e.message+'</div>'}
+  finally{loading=false}}
+async function start(){render(null);await tick();setInterval(tick,REFRESH)}
+if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",start);
+else start();
+</script>
+</body>
+</html>
