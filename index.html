@@ -1467,3 +1467,57 @@ async function tick(){ if(loading) return; loading=true;
     if(s1res){
       sysUpdateLifecycle(state.s1, price);
       const cand1=sysCanOpen(state.s1);
+      if(cand1.ok && s1res.best && s1res.best.score>=CFG.MIN_FIRE_SCORE && (!s1res.best.blocks || s1res.best.blocks.length===0)){
+        const b=s1res.best;
+        sysOpenTrade(state.s1, b.side, b.entry, b.engine, b.score,
+          b.side==="BUY" ? b.entry-CFG.SL_USD : b.entry+CFG.SL_USD,
+          b.side==="BUY" ? b.entry+CFG.TP_USD : b.entry-CFG.TP_USD);
+      }
+      s1_render(s1res);
+    }
+
+    const sniper = s2_engineSniper(c);
+    const scalp = s2_engineScalp(c);
+    const gate = s2_engineGate(c, sniper, scalp);
+    const sr = getSR(c, price);
+    s2_render({sr, sniper, scalp, gate});
+    sysUpdateLifecycle(state.s2, price);
+    const cand2 = sysCanOpen(state.s2);
+    const isApproved = gate.verdict==="APPROVED";
+    const isSniper = sniper.verdict==="A+ BUY" || sniper.verdict==="A+ SELL";
+    const isScalp = scalp.verdict==="SCALP BUY" || scalp.verdict==="SCALP SELL";
+    if(cand2.ok && isApproved && (isSniper || isScalp)){
+      const src = isSniper ? sniper : scalp;
+      const sc = isSniper ? 90 : 80;
+      sysOpenTrade(state.s2, src.side, price, isSniper ? "A+ SNIPER" : "ELITE SCALPER", sc,
+        src.side==="BUY" ? price-CFG.SL_USD : price+CFG.SL_USD,
+        src.side==="BUY" ? price+CFG.TP_USD : price-CFG.TP_USD);
+    }
+
+    document.getElementById("xau_s1_openStatus").textContent = state.s1.open ? state.s1.open.side : "idle";
+    document.getElementById("xau_s2_openStatus").textContent = state.s2.open ? state.s2.open.side : "idle";
+    const cd1 = state.s1.lastTradeTime ? (CFG.COOLDOWN_MIN - (Date.now()-state.s1.lastTradeTime)/60000) : 0;
+    const cd2 = state.s2.lastTradeTime ? (CFG.COOLDOWN_MIN - (Date.now()-state.s2.lastTradeTime)/60000) : 0;
+    document.getElementById("xau_s1_cooldown").textContent = cd1>0 ? Math.ceil(cd1)+" min" : "ready";
+    document.getElementById("xau_s2_cooldown").textContent = cd2>0 ? Math.ceil(cd2)+" min" : "ready";
+    document.getElementById("xau_errHost").innerHTML="";
+  }catch(e){ console.error(e);
+    document.getElementById("xau_errHost").innerHTML='<div class="err">Error: '+e.message+'</div>';
+  } finally { loading=false; }}
+
+async function start(){
+  await tick();
+  function scheduleNextTick(){
+    const now = Date.now();
+    const msIntoBlock = now % 300000;
+    const msUntilNext = 300000 - msIntoBlock + 5000;
+    setTimeout(async () => { await tick(); scheduleNextTick(); }, msUntilNext);
+  }
+  scheduleNextTick();
+}
+if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",start);
+else start();
+})();
+</script>
+</body>
+</html>
